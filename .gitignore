@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# 临时/预览文件
+*_preview.png
+*_checker.png
+*_white.png
+*_corner_*.png
+*_original_*.png
+
+# exe (太大, 用 Release 发布)
+*.exe
+
+# IDE
+.vscode/
+.idea/
