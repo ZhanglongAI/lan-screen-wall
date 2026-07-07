@@ -32,6 +32,64 @@ from PyQt5.QtWidgets import (
 import protocol
 
 
+# ---------- 放大遮罩层 ----------
+
+class ZoomOverlay(QWidget):
+    """半透明黑色遮罩 + 居中放大显示某个 ScreenTile, 占窗口 90%"""
+
+    def __init__(self, parent, tile):
+        super().__init__(parent)
+        self.tile = tile
+        # 半透明黑底遮罩
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: rgba(0,0,0,200);")
+        self.setWindowFlags(Qt.SubWindow)
+        self.show()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 200))
+        if self.tile and self.tile.last_pixmap:
+            # 计算居中区域 (90% 宽高)
+            w = int(self.width() * 0.9)
+            h = int(self.height() * 0.9)
+            x = (self.width() - w) // 2
+            y = (self.height() - h) // 2
+            # 绘制瓦片画面
+            pix = self.tile.last_pixmap.scaled(
+                w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            px = x + (w - pix.width()) // 2
+            py = y + (h - pix.height()) // 2
+            # 边框高亮
+            p.setPen(QColor(80, 140, 220, 200))
+            p.setBrush(QColor(20, 25, 38))
+            p.drawRoundedRect(x - 4, y - 4, w + 8, h + 8, 6, 6)
+            p.drawPixmap(px, py, pix)
+            # 标题
+            p.setPen(QColor(180, 200, 230))
+            f = QFont("Microsoft YaHei", 12, QFont.Bold)
+            p.setFont(f)
+            p.drawText(x, y - 12, self.tile.hostname)
+
+    def mouseDoubleClickEvent(self, e):
+        # 双击退出放大
+        self.parent().toggle_fullscreen(self.tile.cid)
+
+    def mousePressEvent(self, e):
+        # 点击空白区域退出放大
+        w = int(self.width() * 0.9)
+        h = int(self.height() * 0.9)
+        x = (self.width() - w) // 2
+        y = (self.height() - h) // 2
+        if not (x <= e.x() <= x + w and y <= e.y() <= y + h):
+            self.parent().toggle_fullscreen(self.tile.cid)
+
+    def update_display(self):
+        self.update()
+
+
 def resource_path(filename):
     if getattr(sys, "frozen", False):
         return os.path.join(sys._MEIPASS, filename)
@@ -242,17 +300,24 @@ class ScreenTile(QLabel):
                 )
             )
 
+    def mouseDoubleClickEvent(self, e):
+        self.hub.toggle_fullscreen(self.cid)
+
     def contextMenuEvent(self, e):
         menu = QMenu(self)
+        a_zoom = QAction("放大/还原 (双击)", self)
         a_fps = QAction("设置帧率...", self)
         a_q = QAction("设置画质...", self)
         a_disc = QAction("断开此终端", self)
+        menu.addAction(a_zoom)
         menu.addAction(a_fps)
         menu.addAction(a_q)
         menu.addSeparator()
         menu.addAction(a_disc)
         act = menu.exec_(self.mapToGlobal(e.pos()))
-        if act is a_fps:
+        if act is a_zoom:
+            self.hub.toggle_fullscreen(self.cid)
+        elif act is a_fps:
             v, ok = QInputDialog.getInt(
                 self, "帧率", "目标 FPS (1-30):",
                 value=self.target_fps, min=1, max=30,
@@ -296,6 +361,8 @@ class HubWindow(QMainWindow):
         self.token = token
         self.fixed_cols = cols
         self.tiles = {}
+        self.fs_cid = None
+        self.zoom_overlay = None
         self.local_ip = protocol.get_local_ip()
         self._build_ui()
 
@@ -365,6 +432,11 @@ class HubWindow(QMainWindow):
         if tile:
             self.grid.removeWidget(tile)
             tile.deleteLater()
+        if self.fs_cid == cid:
+            self.fs_cid = None
+            if self.zoom_overlay:
+                self.zoom_overlay.close()
+                self.zoom_overlay = None
         self.relayout()
 
     def on_frame(self, cid, hostname, jpeg):
@@ -378,6 +450,37 @@ class HubWindow(QMainWindow):
     def refresh_tiles(self):
         for tile in self.tiles.values():
             tile.update()
+        if self.zoom_overlay:
+            self.zoom_overlay.update_display()
+
+    def toggle_fullscreen(self, cid):
+        if self.fs_cid == cid:
+            # 退出放大
+            self.fs_cid = None
+            if self.zoom_overlay:
+                self.zoom_overlay.close()
+                self.zoom_overlay = None
+        else:
+            # 进入放大
+            self.fs_cid = cid
+            tile = self.tiles.get(cid)
+            if tile:
+                if self.zoom_overlay:
+                    self.zoom_overlay.close()
+                self.zoom_overlay = ZoomOverlay(self, tile)
+                self.zoom_overlay.resize(self.centralWidget().size())
+                self.zoom_overlay.raise_()
+
+    def resizeEvent(self, e):
+        if self.zoom_overlay:
+            self.zoom_overlay.resize(self.centralWidget().size())
+        super().resizeEvent(e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape and self.fs_cid:
+            self.toggle_fullscreen(self.fs_cid)
+        else:
+            super().keyPressEvent(e)
 
     def closeEvent(self, e):
         self.discovery.stop()
